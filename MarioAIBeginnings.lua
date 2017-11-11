@@ -74,6 +74,8 @@ local portXRangeMax = portXRangeMin + portWidth;
 
 local startingBlock = 1;
 
+local cpuSaver9000 = 0;
+
 
 function pressRight()
 	joypad.set(JoyPadRight,1)
@@ -103,8 +105,8 @@ function displayInfo()
 	gui.text(5, 10, "script running", "white");
 
 	--Display level location
-	local loc = "X: " .. memory.readbyte(xPosAddrLarge) .. "." .. memory.readbyte(xPosAddrSmall);
-	gui.text(5, 55, loc, "red");
+	--local loc = "X: " .. memory.readbyte(xPosAddrLarge) .. "." .. memory.readbyte(xPosAddrSmall);
+	--gui.text(5, 55, loc, "red");
 
 	--Fitniss will be used to train the neural network
 	calcFitness();
@@ -112,11 +114,9 @@ function displayInfo()
 	
     
     --Mario's hitbox
-    marioHitBox = findMariosHitbox();
-	gui.drawBox(marioHitBox[1], marioHitBox[2], marioHitBox[3], marioHitBox[4], "blue", "blue")
+    --marioHitBox = findMariosHitbox();
+	--gui.drawBox(marioHitBox[1], marioHitBox[2], marioHitBox[3], marioHitBox[4], "blue", "blue")
 
-	--Enemies hitbox
-	displayEnemyHitbox();
 end
 
 --Calculates fitness, factor of current x position (how far right on the screen)
@@ -126,7 +126,6 @@ end
 
 
 --Finds all the hitboxes of previously found enemies
---populateEnemyList after running this method
 function findEnemyHitbox()
 	--memory.readbyterange skips the address parameter, so we put the address 
 	--right behind where the actual data resides
@@ -142,7 +141,6 @@ function findEnemyHitbox()
 end
 
 --Finding all the enemies that are currently active
---populateEnemyTypeList after running this method
 function populateEnemyList()
 	local temp = memory.readbyterange(enemyListAddr, 6);
 	local i = 1;
@@ -166,19 +164,49 @@ function populateEnemyTypeList()
 	enemyTypeList[6] = nil;
 end
 
+--Combines the three functions above
+--Finds hitboxes, gets active enemies, and gets their types
+function getEnemyData()
+	findEnemyHitbox();
+	populateEnemyList();
+	populateEnemyTypeList();
+end
+
 --Taking the enemy list and enemytype list we draw and color code the hitboxes
+--Also puts enemies into our formatted port (as -1 values)
 function displayEnemyHitbox()
-	findEnemyHitbox()
-	populateEnemyList()
-	populateEnemyTypeList()
+	getEnemyData();
+
+	-- '1' for non enemy
+	-- '-1' for enemy
+	local entityID = 0;
+
+	--Find mario's on screen position so we can get the distance from mario (center of the 13x13 port)
+	local marioX = memory.readbyte(xPosScreenAddr);
+	local marioY = memory.readbyte(yPosScreenAddr);
+
+	local x1;
+	local y1;
+	local x2;
+	local y2;
+	local xBlocksFromMario;
+	local xBlock;
+	local yBlock;
+	local startAddr;
+
 	for i=1,5 do --All five possible enemies
 		--For each set of addresses, draw a box
-		local startAddr = (4*i) - 3;
+		startAddr = (4*i) - 3;
 
-		local x1 = enemyHitBoxesPos[startAddr];
-		local y1 = enemyHitBoxesPos[startAddr + 1];
-		local x2 = enemyHitBoxesPos[startAddr + 2];
-		local y2 = enemyHitBoxesPos[startAddr + 3];
+		x1 = enemyHitBoxesPos[startAddr];
+		y1 = enemyHitBoxesPos[startAddr + 1];
+		x2 = enemyHitBoxesPos[startAddr + 2];
+		y2 = enemyHitBoxesPos[startAddr + 3];
+
+		xBlocksFromMario = math.floor((marioX - x1) / 16);
+		xBlock = 7 --[[middle of table]] - xBlocksFromMario; 
+		yBlock = math.floor( (y1-8) / 16);
+
 
 		--If the enemy does not exist anymore, skip
 		if enemyList[i] ~= 0 then 
@@ -186,8 +214,10 @@ function displayEnemyHitbox()
 			--data from a Super Mario Bros RAM map
 			if enemyTypeList[i] < 33 or enemyTypeList[i] > 55 or enemyTypeList[i] == 45 then
 				color = enemyColor;
+				entityID = -1;
 			else
 				color = groundedColor;
+				entityID = 1;
 			end
 			--I had an overflow issue where the y1 pos would flow from 00 -> FF
 			--causing the drawn hitbox to stretch across the screen vertically.
@@ -198,13 +228,20 @@ function displayEnemyHitbox()
 			if y2 - y1 > 120 then
 				y2 = 0;
 			end
+
+			--insert enemy into formatted table of inputs (13x13)
+			if yBlock > 0 and yBlock < 14 and xBlock ~= 0 and xBlock < 14 then
+				aiInput[yBlock][xBlock] = entityID;
+			end
+
 			--Replace draw box with something to alert ai of enemy location
-				gui.drawBox(x1, y1, x2, y2, color, color);
+			--gui.drawBox(x1, y1, x2, y2, color, color);
 		end
 	end
 end
 
---Fairly self described, finds marios hitbox
+--Fairly self described, finds marios hitbox and returns it in a table
+--return: {x1, y1, x2, y2}
 function findMariosHitbox()
 	local x1 = memory.readbyte(marioHitBoxAddr[1]);
 	local y1 = memory.readbyte(marioHitBoxAddr[2]);
@@ -290,6 +327,7 @@ function formatPort()
     --[[ __________  __________
 		|          ||          |
 		| current  ||  other   |
+		| buffer   ||  buffer  |
 		|__________||__________|
     --]]
 
@@ -336,7 +374,10 @@ function displayPort(x, y)
 	for row=1,portWidth do
 		for col=1,portHeight do
 			if aiInput[row][col] == 1 then
-				gui.drawRectangle(x + 5*col, y + 5*row, 5, 5, "white");
+				gui.drawRectangle(x + 5*col, y + 5*row, 4, 4, "white");
+			end
+			if aiInput[row][col] == -1 then
+				gui.drawRectangle(x + 5*col, y + 5*row, 4, 4, "red");
 			end
 		end
 	end
@@ -347,16 +388,32 @@ end
 --This is the main loop
 while true do
 
-    populateBufferLayouts();
-    formatPort();
-    displayPort(50, 50);
+	--The following two are the most processing intensive, could do every other frame
+	if cpuSaver9000 == 0 then
+		--Reads RAM level buffers, stores them in tables
+    	populateBufferLayouts();
+    	--Takes buffer tables and turns them into a 13x13 table with mario in middle column
+    	--showing the blocks around mario
+    	formatPort();
+
+    	cpuSaver9000 = 1;
+	else
+		cpuSaver9000 = 0;
+	end
+
 
 	--Display:
-		--Level location
-		--Marios hitbox
-		--Enemy hitbox
+		--Level location [commented out]
+		--Marios hitbox [commented out]
 		--Current fitness
 	displayInfo();
+
+	--Display:
+		--Enemies hitboxes [commented out]
+	--Puts enemies into 13x13 formatted port
+	displayEnemyHitbox();
+
+	displayPort(50, 50);
 
 	--Next frame
 	emu.frameadvance();
